@@ -1,6 +1,6 @@
 # Tamamo-X
 
-Dynamically injects Hachimi to UM:PD at runtime.
+Dynamically injects Hachimi (or other DLL(s)) to UM:PD at runtime.
 
 > [!WARNING]
 > I will NOT take any responsibilities if something goes wrong with your account, use at your own risk.
