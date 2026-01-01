@@ -1,17 +1,23 @@
-# Tamamo-X
+<p align="center">
+  <img src="assets/tamamo-x.png" width="200" />
+</p>
 
-Dynamically injects Hachimi (or other DLL(s)) to UM:PD at runtime.
+<h1 align="center">Tamamo-X</h1>
+
+Dynamically injects Hachimi (and other DLL(s)) to UM:PD at runtime.
 
 > [!WARNING]
 > I will NOT take any responsibilities if something goes wrong with your account, use at your own risk.
 
 ## Installation
 
-soon:tm:
+Download the latest release and use :)
 
 ## Building
 
 soon:tm:
+
+Somehow this requires `ucrt64/mingw-w64-ucrt-x86_64-nasm` in MSYS2, thank god.
 
 ## FAQ
 

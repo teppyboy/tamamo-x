@@ -4,19 +4,19 @@ use std::time::Duration;
 use std::{mem, ptr, thread};
 use tracing::{debug, error, info};
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM};
-use windows::Win32::Media::timeBeginPeriod;
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    CREATE_TOOLHELP_SNAPSHOT_FLAGS, CreateToolhelp32Snapshot, MODULEENTRY32W, PROCESSENTRY32W,
-    Module32FirstW, Module32NextW, Process32FirstW, Process32NextW,
+    CREATE_TOOLHELP_SNAPSHOT_FLAGS, CreateToolhelp32Snapshot, MODULEENTRY32W, Module32FirstW,
+    Module32NextW, PROCESSENTRY32W, Process32FirstW, Process32NextW,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
 use windows::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE};
 use windows::Win32::System::Threading::{
-    GetCurrentThread, GetExitCodeThread, GetProcessId, OpenProcess, QueryFullProcessImageNameW,
-    SetThreadPriority, WaitForInputIdle, WaitForSingleObject, PROCESS_NAME_FORMAT,
-    THREAD_PRIORITY_HIGHEST,
+    GetExitCodeThread, GetProcessId, OpenProcess, PROCESS_NAME_FORMAT, QueryFullProcessImageNameW,
+    WaitForInputIdle, WaitForSingleObject,
 };
-use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+};
 use windows::core::{BOOL, s};
 
 // Define function pointer types for the dynamically resolved NT functions
@@ -172,10 +172,15 @@ pub unsafe fn inject_dll_to_handle(ph: HANDLE, dll_path: &str) -> bool {
             let _ = GetExitCodeThread(h_thread, &mut exit_code);
 
             if exit_code == 0 {
-                error!("LoadLibraryA failed in target process (Exit code 0). Check if DLL path is correct and architecture matches.");
+                error!(
+                    "LoadLibraryA failed in target process (Exit code 0). Check if DLL path is correct and architecture matches."
+                );
                 false
             } else {
-                info!("LoadLibraryA succeeded. DLL base address: 0x{:X}", exit_code);
+                info!(
+                    "LoadLibraryA succeeded. DLL base address: 0x{:X}",
+                    exit_code
+                );
                 true
             }
         } else {
@@ -188,66 +193,64 @@ pub unsafe fn inject_dll_to_handle(ph: HANDLE, dll_path: &str) -> bool {
     }
 }
 
-pub fn wait_for_process(target_process_name: &str, _dll_path: &str) -> HANDLE {
-    // 1. Convert the borrowed string slice (&str) to a Wide String
-    // This is efficient: it only allocates the memory for the UTF-16 vector.
+pub fn find_process(target_process_name: &str) -> Option<HANDLE> {
     let target_process_name = target_process_name.trim_end_matches('\0');
     let mut target_name_wide: Vec<u16> = target_process_name.encode_utf16().collect();
-    target_name_wide.push(0); // Manually add null terminator
-
-    info!("Waiting for '{}'...", target_process_name);
+    target_name_wide.push(0);
 
     unsafe {
-        // 2. Boost timer resolution to 1ms
-        let _ = timeBeginPeriod(1);
-        // 3. Set high priority
-        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-    }
+        let snapshot = match CreateToolhelp32Snapshot(CREATE_TOOLHELP_SNAPSHOT_FLAGS(0x00000002), 0)
+        {
+            Ok(h) => h,
+            Err(_) => return None,
+        };
 
-    loop {
-        unsafe {
-            let snapshot = match CreateToolhelp32Snapshot(CREATE_TOOLHELP_SNAPSHOT_FLAGS(0x00000002), 0) {
-                Ok(h) => h,
-                Err(_) => {
-                    thread::sleep(Duration::from_millis(1));
-                    continue;
+        let mut entry = PROCESSENTRY32W::default();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                if entry.szExeFile.starts_with(&target_name_wide) {
+                    let ph = match OpenProcess(
+                        windows::Win32::System::Threading::PROCESS_ALL_ACCESS,
+                        false,
+                        entry.th32ProcessID,
+                    ) {
+                        Ok(handle) => handle,
+                        Err(_) => {
+                            let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+                            return None;
+                        }
+                    };
+                    let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+                    return Some(ph);
                 }
-            };
 
-            let mut entry = PROCESSENTRY32W::default();
-            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-
-            if Process32FirstW(snapshot, &mut entry).is_ok() {
-                loop {
-                    if entry.szExeFile.starts_with(&target_name_wide) {
-                        info!("Process found! PID: {}", entry.th32ProcessID);
-
-                        let ph = match OpenProcess(
-                            windows::Win32::System::Threading::PROCESS_ALL_ACCESS,
-                            false,
-                            entry.th32ProcessID,
-                        ) {
-                            Ok(handle) => handle,
-                            Err(e) => {
-                                error!("OpenProcess failed (Admin?): {}", e);
-                                thread::sleep(Duration::from_millis(1));
-                                break;
-                            }
-                        };
-
-                        return ph;
-                    }
-
-                    if Process32NextW(snapshot, &mut entry).is_err() {
-                        break;
-                    }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
                 }
             }
         }
-
-        // 5. Sleep 1ms (Accuracy guaranteed by timeBeginPeriod)
-        thread::sleep(Duration::from_millis(1));
+        let _ = windows::Win32::Foundation::CloseHandle(snapshot);
     }
+    None
+}
+
+pub fn has_window(ph: HANDLE) -> bool {
+    let target_pid = unsafe { GetProcessId(ph) };
+    let mut data = EnumData {
+        target_pid,
+        found: false,
+    };
+
+    unsafe {
+        let _ = EnumWindows(
+            Some(enum_windows_callback),
+            LPARAM(&mut data as *mut EnumData as isize),
+        );
+    }
+
+    data.found
 }
 
 // May be useful for future features
@@ -257,7 +260,14 @@ pub fn get_process_directory(ph: HANDLE) -> Option<PathBuf> {
     let mut size = buffer.len() as u32;
 
     unsafe {
-        if QueryFullProcessImageNameW(ph, PROCESS_NAME_FORMAT(0), windows::core::PWSTR(buffer.as_mut_ptr()), &mut size).is_ok() {
+        if QueryFullProcessImageNameW(
+            ph,
+            PROCESS_NAME_FORMAT(0),
+            windows::core::PWSTR(buffer.as_mut_ptr()),
+            &mut size,
+        )
+        .is_ok()
+        {
             let path_str = String::from_utf16_lossy(&buffer[..size as usize]);
             let path = PathBuf::from(path_str);
             return path.parent().map(|p| p.to_path_buf());
@@ -275,7 +285,10 @@ pub fn wait_for_module(ph: HANDLE, module_name: &str) -> bool {
     loop {
         unsafe {
             // TH32CS_SNAPMODULE (0x8) | TH32CS_SNAPMODULE32 (0x10)
-            let snapshot = match CreateToolhelp32Snapshot(CREATE_TOOLHELP_SNAPSHOT_FLAGS(0x00000008 | 0x00000010), pid) {
+            let snapshot = match CreateToolhelp32Snapshot(
+                CREATE_TOOLHELP_SNAPSHOT_FLAGS(0x00000008 | 0x00000010),
+                pid,
+            ) {
                 Ok(h) => h,
                 Err(_) => {
                     thread::sleep(Duration::from_millis(100));
@@ -326,6 +339,7 @@ unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> B
     BOOL::from(true) // Continue enumerating
 }
 
+#[allow(dead_code)]
 pub fn wait_for_window(ph: HANDLE) {
     let target_pid = unsafe { GetProcessId(ph) };
     debug!("Waiting for a visible window for PID {}...", target_pid);
@@ -337,7 +351,10 @@ pub fn wait_for_window(ph: HANDLE) {
 
     loop {
         unsafe {
-            let _ = EnumWindows(Some(enum_windows_callback), LPARAM(&mut data as *mut EnumData as isize));
+            let _ = EnumWindows(
+                Some(enum_windows_callback),
+                LPARAM(&mut data as *mut EnumData as isize),
+            );
         }
 
         if data.found {

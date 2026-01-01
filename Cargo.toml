@@ -20,3 +20,11 @@ features = [
 [dependencies]
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+eframe = { version = "0.31.0", features = ["default"] }
+egui_extras = { version = "0.31.0", features = ["image"] }
+image = { version = "0.25.5", features = ["png"] }
+rfd = "0.15.2"
+reqwest = { version = "0.13.1", default-features = false, features = ["blocking", "http2", "json", "native-tls"] }
+serde = "1.0.228"
+serde_json = "1.0.148"
+sha2 = "0.10.8"
